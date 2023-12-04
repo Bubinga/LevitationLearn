@@ -1,261 +1,192 @@
-import os
+import random
 import torch
 from torch import nn
-import gymnasium as gym
-from gymnasium import Env
-from gym.spaces import Discrete, Box
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+import gymnasium as gym
+from torch.distributions.normal import Normal
+from maglev_env import MagneticEnv, DT
 
 
-class NeuralNetwork(nn.Module):
-    def __init__(self, input_count, mag_count):
+class Policy_Network(nn.Module):
+    """Parametrized Policy Network."""
+
+    def __init__(self, obs_space_dims: int, action_space_dims: int):
+        """Initializes a neural network that estimates the mean and standard deviation
+         of a normal distribution from which an action is sampled from.
+
+        Args:
+            obs_space_dims: Dimension of the observation space
+            action_space_dims: Dimension of the action space
+        """
         super().__init__()
-        self.input_count = input_count
-        self.mag_count = mag_count
-        self.model = nn.Sequential(
-            nn.Linear(input_count, 16),
-            nn.ReLU(),
-            nn.Linear(16, 16),
-            nn.ReLU(),
-            nn.Linear(16, mag_count),
+
+        # NOTE think more about these values
+        hidden_space1 = 16
+        hidden_space2 = 16
+
+        # Shared Network
+        self.shared_net = nn.Sequential(
+            nn.Linear(obs_space_dims, hidden_space1),
+            nn.Tanh(),
+            nn.Linear(hidden_space1, hidden_space2),
+            nn.Tanh(),
         )
 
-    def forward(self, x):
-        return self.model(x)
+        # Policy Mean specific Linear Layer
+        self.policy_mean_net = nn.Sequential(
+            nn.Linear(hidden_space2, action_space_dims)
+        )
 
-    def loss_calc(self, path, desired_point):
-        # calcualtes distance from each point in path to desired point
-        total_loss = torch.tensor([0.0])
-        for point in path:
-            distance = torch.sqrt(torch.sum((point - desired_point) ** 2))
-            total_loss += distance
-        return total_loss
+        # Policy Std Dev specific Linear Layer
+        # NOTE do we want relu on this?
+        self.policy_stddev_net = nn.Sequential(
+            nn.Linear(hidden_space2, action_space_dims),
+            nn.ReLU()
+        )
 
-    def gen_training_data(self, data_count=100):
-        # create start points with random coords in the range (-.05 - 0.05,-.05 - 0.05, 0 - 1)
-        start_x = (np.rand(data_count) - 0.5) * 0.1
-        start_y = (np.rand(data_count) - 0.5) * 0.1
-        start_z = np.normal(mean=0.5, std=0.2, size=(1, data_count)).squeeze()
-        start_z.clamp(0, 1)
-        start = np.stack((start_x, start_y, start_z), dim=1)
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Conditioned on the observation, returns the mean and standard deviation
+         for each normal distribution from which an action is sampled from.
 
-        # create desired end points with random coords in the range (0,0, 0.1-0.9)
-        finish_x, finish_y = np.zeros(data_count), np.zeros(data_count)
-        finish_z = np.rand(data_count) * 0.8 + 0.1
-        finish = np.stack((finish_x, finish_y, finish_z), dim=1)
+        Args:
+            x: Observation from the environment
 
-        return np.stack((start, finish), dim=1)
-
-class ElectroMagnet:
-    def __init__(self, charge=1, position=np.array([0., 0., 0.])) -> None:
-        self.position = position
-        collision_radius = 1
-        self.Pole_N = MagneticObject(collision_radius, charge, position + np.array((0, 0, 0.5)))
-        self.Pole_S = MagneticObject(collision_radius, -charge, position + np.array((0, 0, -0.5)))
-        self.charge = charge
-
-    @property
-    def charge(self):
-        return self._charge
-
-    @charge.setter
-    def charge(self, value):
-        self._charge = value
-        self.Pole_N.charge = value
-        self.Pole_S.charge = -value
-
-
-class MagneticObject:
-    def __init__(self, collision_radius, charge=1, position=np.array([0., 0., 0.]), mass=1) -> None:
-        self.charge = charge
-        self.position = position
-        self.velocity = np.array([0., 0., 0.])
-        self.mass = mass
-        self.collision_radius = collision_radius
-
-    def magnetic_force(self, other_mag):
-        """Calculate force on self from other magnetic Object"""
-        r = other_mag.position - self.position
-        distance = np.linalg.norm(r)
-        force = -MAG_CONSTANT* (self.charge * other_mag.charge)/ (distance**2) * r / distance
-        return force
-
-
-class MagneticTarget(MagneticObject):
-    def __init__(self, collision_radius, charge=1, position=np.array((0, 0, 0)), mass=1) -> None:
-        super().__init__(charge, collision_radius, position, mass)        
-
-    # update it's own position, velocity, etc
-    # Function to update positions and velocities
-    def update_positions_and_velocities(self, force):
-        self.position = self.position + self.velocity * DT
-        self.velocity = self.velocity + force / self.mass * DT
-
-    # Function to check for collision and perform a realistic 3D reflection
-    def adjust_if_collision(self, other_mags: list[ElectroMagnet]):
-        def is_colliding(other_mag):
-            if (np.linalg.norm(other_mag.Pole_N.position - self.position) 
-            < np.linalg.norm(other_mag.Pole_N.collision_radius - self.collision_radius)):
-                return True
-            elif (np.linalg.norm(other_mag.Pole_S.position - self.position) 
-            < np.linalg.norm(other_mag.Pole_S.collision_radius - self.collision_radius)):
-                return True
-            return False
-        
-        for electromag in other_mags:
-            if is_colliding(electromag):
-                # TODO check sign is correct upon run
-                n = self.position - electromag.position
-                n /= np.linalg.norm(n)  # Normalize collision normal vector
-
-                # Calculate relative velocity (electromag is stationary)
-                v_rel = self.velocity - np.array((0., 0., 0.))
-
-                # Calculate reflection using the formula: v' = −(2(n · v) n − v)
-                DAMPING_COEFF = 0.5
-                vel2_reflect = -(2 * np.dot(v_rel, n) * n - v_rel) * DAMPING_COEFF
-                self.velocity = vel2_reflect
-
-        # return self.velocity◘
-
-
-class MagneticEnv(Env):
-    def __init__(self, mag_coords, dt) -> None:
-        super().__init__()
-        # N = # of magnets, 1xN action space
-        n = len(mag_coords)
-        self.action_space = Box(-10, 10, shape=(n,))
-        # XYZ current, XYZ velocities, and XYZ setpoint = 3 x 3
-        self.observation_space = Box(-100, 100, shape=(3, 3))
-
-        self.ball = MagneticTarget(1)
-        self.electromagnets = []
-        for magnet_pos in mag_coords:
-            self.electromagnets.append(ElectroMagnet(1, magnet_pos))
-        self.desired_position = np.array((0., 0., 0.))
-
-        self.timesteps = 0
-        self.dt = dt
-
-        self.fig = plt.figure()
-        self.ax = self.fig.add_subplot(111, projection="3d")
-        self.fig.tight_layout()
-        # self.charges = (np.random.rand(n) - 0.5) * 2 #random charges between -1 and 1
-
-    def step(self, new_charges):
-        # For each electromagnet
-        force = np.array([0., 0., 0.])
-        for i, new_charge in enumerate(new_charges):
-            # set new charge
-            self.electromagnets[i].charge = new_charge
-            # calc forces on ball from each pole
-            force += self.ball.magnetic_force(self.electromagnets[i].Pole_N)
-            force += self.ball.magnetic_force(self.electromagnets[i].Pole_S)
-
-        force += G * self.ball.mass * np.array([0., 0., -1.])  # Gravity
-
-        self.ball.update_positions_and_velocities(force)
-        self.ball.adjust_if_collision(self.electromagnets)
-
-        # distance loss
-        loss = np.linalg.norm(self.desired_position - self.ball.position)**2
-        done = self.check_done()
-
-        return loss, done
-
-    def render(self):
-        self.draw_all()
-        plt.pause(0.01)
-
-    def reset(self):
-        self.ball.position = np.array([0., 0., 0.])
-        self.ball.velocity = np.array([0., 0., 0.])
-        for electromag in self.electromagnets:
-            electromag.charge = 1
-        self.timesteps = 0
-
-    def check_done(self):
+        Returns:
+            action_means: predicted means of the action space's normal distribution
+            action_stddevs: predicted standard deviation of the action space's normal distribution
         """
-        Checks if the environment has finished executing according to the following conditions:
-        Elapsed time: If time runs out, it is done
-        Bounding box: If the ball moves outside of a bounding box, it is done
-        Successful Run: If the ball reaches the final position with roughly zero velocity, it succeeded.
+        shared_features = self.shared_net(x.float())
+
+        action_means = self.policy_mean_net(shared_features)
+        action_stddevs = torch.log(
+            1 + torch.exp(self.policy_stddev_net(shared_features))
+        )
+
+        return action_means, action_stddevs
+
+class Policy:
+    """REINFORCE algorithm."""
+
+    def __init__(self, obs_space_dims: int, action_space_dims: int):
+        """Initializes an agent that learns a policy via REINFORCE algorithm.
+        Args:
+            obs_space_dims: Dimension of the observation space
+            action_space_dims: Dimension of the action space
         """
-        # Greater than 10 simulation seconds
-        if self.timesteps / self.dt > 10:
-            print("time exceeded")
-            return True
-        # If the ball is further than 10 from 0,0,0
-        if np.linalg.norm(self.ball.position) > 10:
-            print("out of bounds")
-            return True
-        # if the ball is within 0.01 distance of the desired position and has no velocity greater than 0.1
-        if (np.linalg.norm(self.ball.position - self.desired_position) < 0.01
-            and np.linalg.norm(self.ball.velocity) < 0.1):
-            print("position reached successfully")
-            return True
-        return False
+        self.action_space_dims = action_space_dims
 
-    def draw_all(self):
-        self.ax.clear()
-        self.ax.set_ylim([-5, 5])
-        self.ax.set_zlim([-5, 5])
-        self.ax.set_xlim([-5, 5])
-        self.ax.axis(True)
-        # draw target ball:
-        self.ax.scatter(*self.ball.position, c="blue", marker="o")
-        # draw electromagnets
-        for electromag in self.electromagnets:
-            self.ax.scatter(*electromag.Pole_N.position, c="blue", marker="o", s=(1 / 8 * 72**2))
-            self.ax.scatter(*electromag.Pole_S.position, c="red", marker="o", s=(1 / 8 * 72**2))
+        # Hyperparameters
+        self.learning_rate = 1e-4  # Learning rate for policy optimization
+        self.gamma = 0.99  # Discount factor
+        self.eps = 1e-6  # small number for mathematical stability
 
+        self.probs = []  # Stores probability values of the sampled action
+        self.rewards = []  # Stores the corresponding rewards
 
-def end_condition(des_pos, ball_coord, time_spent):
-    """
-    expects:
-    des_pos = (x,y,z) coords describing desired position
-    ball_coord: (x,y,z) of ball_coordinates
-    time_spent: int representing seconds since simulation began
-    """
-    pass
+        self.net = Policy_Network(obs_space_dims, action_space_dims)
+        self.optimizer = torch.optim.AdamW(self.net.parameters(), lr=self.learning_rate)
 
-# Constants
-G = 5  # Gravitational constant
-MAG_CONSTANT = 10  # Strength of the magnetic force
-DT = 0.05  # Time step for simulation
+    def sample_action(self, state: np.ndarray) -> float:
+        """Returns action(s), conditioned on the policy and observation.
 
-if __name__ == "main":
-    device = (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
+        Args:
+            state: Observation from the environment
+
+        Returns:
+            action: Action(s) to be performed
+        """
+        state = torch.tensor(np.array([state]))
+        action_means, action_stddevs = self.net(state)
+
+        # create a normal distribution from the predicted
+        #   mean and standard deviation and sample all actions action
+        actions = np.zeros(self.action_space_dims)
+        for action_dim in range(self.action_space_dims):
+            distrib = Normal(action_means[action_dim] + self.eps, action_stddevs[action_dim] + self.eps)
+            action = distrib.sample()
+            prob = distrib.log_prob(action)
+            actions[action_dim] = action.numpy()
+
+            self.probs.append(prob)
+
+        return actions
+
+    def update(self):
+        """Updates the policy network's weights."""
+        running_g = 0
+        gs = []
+
+        # Discounted return (backwards) - [::-1] will return an array in reverse
+        for R in self.rewards[::-1]:
+            running_g = R + self.gamma * running_g
+            gs.insert(0, running_g)
+
+        deltas = torch.tensor(gs)
+
+        loss = 0
+        # minimize -1 * prob * reward obtained
+        for log_prob, delta in zip(self.probs, deltas):
+            loss += log_prob.mean() * delta * (-1)
+
+        # Update the policy network
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        # Empty / zero out all episode-centric/related variables
+        self.probs = []
+        self.rewards = []
+
+if __name__ == '__main__':
+
+    device = ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device} device") 
 
+    DO_RENDER = False
     RANDOM_SEED = 42
     torch.manual_seed(RANDOM_SEED)
 
-    mag_coords = [np.array([0.,0.,2.])]
-    # TODO set the range of observation space to the range of the visualization
+    mag_coords = [np.array([0.,0.,3.])]
+    spawn_range = ((-0.1,0.1),(-0.1,0.1),(0,1))
+    desired_range = ((0,0),(0,0),(0.1,0.9))
+    # Create and wrap the environment
     env = MagneticEnv(mag_coords, DT)
-    # model = NeuralNetwork(env.observation_space.shape[0],env.action_space.shape[0]).to(device)
-    # training_data = model.gen_training_data(10)
+    wrapped_env = gym.wrappers.RecordEpisodeStatistics(env, 50)  # Records episode-reward
 
-    episodes = 10
-    for episode in range(1, episodes+1):
-        state = env.reset()
+    total_num_episodes = int(5e3)  # Total number of episodes
+    obs_space_dims = env.observation_space.shape[0]
+    action_space_dims = env.action_space.shape[0]
+
+    # Reinitialize agent every seed
+    agent = Policy(obs_space_dims, action_space_dims)
+    reward_over_episodes = []
+
+    for episode in range(total_num_episodes):
+        obs, info = wrapped_env.reset(seed=RANDOM_SEED, options=(spawn_range,desired_range))
         done = False
-        score = 0
 
         while not done:
-            env.render()
-            action = env.action_space.sample()
-            reward, done = env.step(action)
-            score += reward
-        print(f"Episode #{episode}: Score {score}")
+            action = agent.sample_action(obs)
+            obs, reward, terminated, truncated, info = wrapped_env.step(action)
+            agent.rewards.append(reward)
+
+            if DO_RENDER: env.render()
+
+            done = terminated or truncated
+
+        reward_over_episodes.append(sum(agent.rewards)/len(agent.rewards))
+        agent.update()
+
+        if episode % 1000 == 0:
+            avg_reward = int(np.mean(wrapped_env.return_queue))
+            print("Episode:", episode, "Average Reward:", avg_reward)
+
+    #TODO fix this, shows the 3D view graph needlessly
+    plt.figure()
+    plt.plot(reward_over_episodes)
+    plt.show()
