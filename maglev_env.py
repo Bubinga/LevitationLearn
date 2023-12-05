@@ -158,10 +158,10 @@ class MagneticEnv(Env):
         # penalize for distance from the desired position
         # reward for achieving setpoint and being steady
         prev_distance = np.linalg.norm(self.desired_position - pre_position)
-        distance = np.linalg.norm(self.desired_position - self.ball.position)
-        dist_reward = -distance
-        improvement_reward = prev_distance-distance
-        reward = dist_reward + 100 * improvement_reward
+        distance = np.linalg.norm(self.desired_position - self.ball.position)/np.linalg.norm((10,10,10))
+        dist_reward = 1.0-distance
+        reward = dist_reward**(self.timesteps)
+        #print(dist_reward)
 
         # print(f"Total Reward: {reward}, Improve Reward: {improvement_reward}, Dist Reward: {dist_reward} ")
         return reward
