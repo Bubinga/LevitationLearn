@@ -126,12 +126,13 @@ class MagneticEnv(Env):
 
         force += G * self.ball.mass * np.array([0., 0., -1.])  # Gravity
 
+        old_position = self.ball.position.copy()
         self.ball.update_positions_and_velocities(force)
         self.ball.adjust_if_collision(self.electromagnets)
 
         self.timesteps += 1
 
-        reward = self.calculate_reward()
+        reward = self.calculate_reward(old_position)
         terminated, truncated = self.check_done()
         obs = self.get_state()
         info = dict()
@@ -153,12 +154,16 @@ class MagneticEnv(Env):
         """
         return np.concatenate((self.ball.position, self.ball.velocity, self.desired_position))
 
-    def calculate_reward(self):
+    def calculate_reward(self, pre_position):
         # penalize for distance from the desired position
         # reward for achieving setpoint and being steady
+        prev_distance = np.linalg.norm(self.desired_position - pre_position)
         distance = np.linalg.norm(self.desired_position - self.ball.position)
-        reward = 1/distance
-        print(f"reward: {reward}")
+        dist_reward = -distance
+        improvement_reward = prev_distance-distance
+        reward = dist_reward + 100 * improvement_reward
+
+        # print(f"Total Reward: {reward}, Improve Reward: {improvement_reward}, Dist Reward: {dist_reward} ")
         return reward
 
     def render(self):
@@ -201,17 +206,17 @@ class MagneticEnv(Env):
         """
         # Greater than 10 simulation seconds
         if self.timesteps * self.dt > 10:
-            print("time exceeded")
+            # print("time exceeded")
             return (False, True)
         # If the ball is further than 10 from 0,0,0
         if np.linalg.norm(self.ball.position) > 10:
-            print("out of bounds")
+            # print("out of bounds")
             return (False, True)
         # if the ball is within 0.01 distance of the desired position and has no velocity greater than 0.1
         # NOTE add condition where it has to be inside of the desired range for a certain amount of timesteps
         if (np.linalg.norm(self.ball.position - self.desired_position) < 0.01
             and np.linalg.norm(self.ball.velocity) < 0.1):
-            print("position reached successfully")
+            # print("position reached successfully")
             return (True, False)
         return False, False
 
