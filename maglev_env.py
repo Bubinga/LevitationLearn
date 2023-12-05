@@ -230,7 +230,7 @@ class MagneticEnv(Env):
         self.ax.scatter(*self.ball.position, c="blue", marker="o")
         # draw electromagnets
         for electromag in self.electromagnets:
-            size_scaling = electromag.charge * (1/8 * 72 **2)
+            size_scaling = abs(electromag.charge * (1/8 * 72 **2))
             # print("size of north pole: ", size_scaling)
             # print("size of south pole: ", (1/8 * 72 **2))
             self.ax.scatter(*electromag.Pole_N.position, c="blue", marker="o", s=size_scaling,alpha=0.75)
