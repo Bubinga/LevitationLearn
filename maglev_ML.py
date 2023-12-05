@@ -103,6 +103,8 @@ class Policy:
         state = torch.tensor(np.array([state]))
         action_means, action_stddevs = self.net(state)
 
+        action_means = action_means.squeeze()
+        action_stddevs = action_stddevs.squeeze()
         # create a normal distribution from the predicted
         #   mean and standard deviation and sample all actions action
         actions = np.zeros(self.action_space_dims)
@@ -147,11 +149,11 @@ if __name__ == '__main__':
     device = ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device} device") 
 
-    DO_RENDER = False
+    DO_RENDER = True
     RANDOM_SEED = 42
     torch.manual_seed(RANDOM_SEED)
 
-    mag_coords = [np.array([0.,0.,3.])]
+    mag_coords = [np.array([0.,-1.,3.]),np.array([0.,1.,3.])]
     spawn_range = ((-0.1,0.1),(-0.1,0.1),(0,1))
     desired_range = ((0,0),(0,0),(0.1,0.9))
     # Create and wrap the environment
