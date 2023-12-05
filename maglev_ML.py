@@ -5,11 +5,13 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib
+import keyboard
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import gymnasium as gym
 from torch.distributions.normal import Normal
 from maglev_env import MagneticEnv, DT
+
 
 
 class Policy_Network(nn.Module):
@@ -144,12 +146,20 @@ class Policy:
         self.probs = []
         self.rewards = []
 
+def plot_rewards(rewards):
+    plt.figure()
+    plt.plot(rewards)
+    plt.xlabel('Episode')
+    plt.ylabel('Average Reward')
+    plt.title('Reward Over Episodes')
+    plt.show()
+
 if __name__ == '__main__':
 
     device = ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device} device") 
 
-    DO_RENDER = True
+    DO_RENDER = False
     RANDOM_SEED = 42
     torch.manual_seed(RANDOM_SEED)
 
@@ -188,7 +198,7 @@ if __name__ == '__main__':
             avg_reward = int(np.mean(wrapped_env.return_queue))
             print("Episode:", episode, "Average Reward:", avg_reward)
 
-    #TODO fix this, shows the 3D view graph needlessly
-    plt.figure()
-    plt.plot(reward_over_episodes)
-    plt.show()
+        if keyboard.is_pressed('t'):
+                DO_RENDER = not DO_RENDER
+    
+    plot_rewards(reward_over_episodes)
