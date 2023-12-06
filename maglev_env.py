@@ -4,9 +4,10 @@ from gym.spaces import Discrete, Box
 import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')
+from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
 
-G = 5  # Gravitational constant
+G = .5  # Gravitational constant
 MAG_CONSTANT = 10  # Strength of the magnetic force
 # TODO Clean up usage of dt so it's either passed in or a global const
 DT = 0.05  # Time step for simulation
@@ -86,7 +87,7 @@ class MagneticTarget(MagneticObject):
 
 
 class MagneticEnv(Env):
-    def __init__(self, mag_coords, dt) -> None:
+    def __init__(self, mag_coords, dt = DT) -> None:
         super().__init__()
         # N = # of magnets, 1xN action space
         n = len(mag_coords)
@@ -132,8 +133,8 @@ class MagneticEnv(Env):
 
         self.timesteps += 1
 
-        reward = self.calculate_reward(old_position)
         terminated, truncated = self.check_done()
+        reward = self.calculate_reward(old_position, terminated)
         obs = self.get_state()
         info = dict()
 
@@ -154,14 +155,15 @@ class MagneticEnv(Env):
         """
         return np.concatenate((self.ball.position, self.ball.velocity, self.desired_position))
 
-    def calculate_reward(self, pre_position):
+    def calculate_reward(self, pre_position, succeeded):
         # penalize for distance from the desired position
         # reward for achieving setpoint and being steady
         prev_distance = np.linalg.norm(self.desired_position - pre_position)
-        distance = np.linalg.norm(self.desired_position - self.ball.position)/np.linalg.norm((10,10,10))
-        dist_reward = 1.0-distance
-        reward = dist_reward**(self.timesteps)
-        #print(dist_reward)
+        distance = np.linalg.norm(self.desired_position - self.ball.position)
+        success_reward = 1 if succeeded else 0
+        dist_reward = 10-distance
+        improvement_reward = (prev_distance-distance)/ DT
+        reward = dist_reward + improvement_reward + 200 * success_reward
 
         # print(f"Total Reward: {reward}, Improve Reward: {improvement_reward}, Dist Reward: {dist_reward} ")
         return reward
@@ -208,17 +210,28 @@ class MagneticEnv(Env):
         if self.timesteps * self.dt > 10:
             # print("time exceeded")
             return (False, True)
-        # If the ball is further than 10 from 0,0,0
-        if np.linalg.norm(self.ball.position) > 10:
+        # If the ball is further than 8 from desired position
+        if np.linalg.norm(self.ball.position - self.desired_position) > 8:
             # print("out of bounds")
             return (False, True)
         # if the ball is within 0.01 distance of the desired position and has no velocity greater than 0.1
         # NOTE add condition where it has to be inside of the desired range for a certain amount of timesteps
-        if (np.linalg.norm(self.ball.position - self.desired_position) < 0.01
+        # NOTE add in and np.linalg.norm(self.ball.velocity) < 0.1) later maybe?
+        if (np.linalg.norm(self.ball.position - self.desired_position) < 0.05
             and np.linalg.norm(self.ball.velocity) < 0.1):
             # print("position reached successfully")
             return (True, False)
         return False, False
+
+    def number_to_color(self, num):
+        # Define the colormap (RdBu) and normalization
+        cmap = plt.get_cmap('coolwarm')
+        norm = Normalize(vmin=-5, vmax=5)
+        
+        # Map the number to a color
+        color = cmap(norm(num))
+        
+        return color
 
     def draw_all(self):
         self.ax.clear()
@@ -229,13 +242,11 @@ class MagneticEnv(Env):
         # draw target ball:
         self.ax.scatter(*self.ball.position, c="blue", marker="o")
         # draw electromagnets
+        scale = 5
         for electromag in self.electromagnets:
-            size_scaling = abs(electromag.charge * (1/8 * 72 **2))
-            # print("size of north pole: ", size_scaling)
-            # print("size of south pole: ", (1/8 * 72 **2))
-            self.ax.scatter(*electromag.Pole_N.position, c="blue", marker="o", s=size_scaling,alpha=0.75)
-            # self.ax.scatter(*electromag.Pole_S.position, c="red", marker="o", s=size_scaling)
-            # self.ax.scatter(*electromag.Pole_N.position, c="blue", marker="o", s=(1 / 8 * 72**2))
-            self.ax.scatter(*electromag.Pole_S.position, c="red", marker="o", s=size_scaling,alpha=0.75)
+            size_scaling = abs(1 * (1/8 * 72 **2))
+            positions = zip(electromag.Pole_N.position, electromag.Pole_S.position)
+            colors = [self.number_to_color(electromag.Pole_N.charge), self.number_to_color(electromag.Pole_S.charge)]
+            self.ax.scatter(*positions, c=colors, marker="o", s=size_scaling,alpha=0.8)
         # draw position that we're trying to get the ball into
         self.ax.scatter(*self.desired_position, c="green", marker="o", s=100,alpha=0.5)
