@@ -6,8 +6,9 @@ import matplotlib
 matplotlib.use('TkAgg')
 from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
+# import pdb; pdb.set_trace()
 
-G = .5  # Gravitational constant
+G = 1  # Gravitational constant
 MAG_CONSTANT = 10  # Strength of the magnetic force
 # TODO Clean up usage of dt so it's either passed in or a global const
 DT = 0.05  # Time step for simulation
@@ -55,8 +56,8 @@ class MagneticTarget(MagneticObject):
     # update it's own position, velocity, etc
     # Function to update positions and velocities
     def update_positions_and_velocities(self, force):
-        self.position = self.position + self.velocity * DT
         self.velocity = self.velocity + force / self.mass * DT
+        self.position = self.position + self.velocity * DT
 
     # Function to check for collision and perform a realistic 3D reflection
     def adjust_if_collision(self, other_mags: list[ElectroMagnet]):
@@ -83,7 +84,7 @@ class MagneticTarget(MagneticObject):
                 vel2_reflect = -(2 * np.dot(v_rel, n) * n - v_rel) * DAMPING_COEFF
                 self.velocity = vel2_reflect
 
-        # return self.velocity◘
+        # return self.velocity
 
 
 class MagneticEnv(Env):
@@ -100,14 +101,16 @@ class MagneticEnv(Env):
         for magnet_pos in mag_coords:
             self.electromagnets.append(ElectroMagnet(1, magnet_pos))
         self.desired_position = np.array((0., 0., 0.))
+        self.starting_position = np.array((0., 0., 0.))
 
         self.timesteps = 0
+        self.success_time = 0
         self.dt = dt
 
         self.fig = plt.figure()
         self.ax = self.fig.add_subplot(111, projection="3d")
         self.fig.tight_layout()
-        # self.charges = (np.random.rand(n) - 0.5) * 2 #random charges between -1 and 1
+
 
     def step(self, new_charges_action):
         """
@@ -133,8 +136,8 @@ class MagneticEnv(Env):
 
         self.timesteps += 1
 
-        terminated, truncated = self.check_done()
-        reward = self.calculate_reward(old_position, terminated)
+        terminated, truncated, in_goal = self.check_done()
+        reward = self.calculate_reward(old_position, in_goal)
         obs = self.get_state()
         info = dict()
 
@@ -153,18 +156,25 @@ class MagneticEnv(Env):
         Returns a 9x1 np array of:
           (ball's XYZ position, ball's XYZ velocity, and desired XYZ position)
         """
-        return np.concatenate((self.ball.position, self.ball.velocity, self.desired_position))
+        return np.concatenate((self.ball.position, self.ball.velocity, self.desired_position),axis=0)
 
     def calculate_reward(self, pre_position, succeeded):
+        def sign_square(x):
+            """Squares a number while keeping the same sign"""
+            return x * abs(x)
         # penalize for distance from the desired position
         # reward for achieving setpoint and being steady
+        original_dist = np.linalg.norm(self.desired_position - self.starting_position)
         prev_distance = np.linalg.norm(self.desired_position - pre_position)
         distance = np.linalg.norm(self.desired_position - self.ball.position)
         success_reward = 1 if succeeded else 0
-        dist_reward = 10-distance
+        dist_reward = (distance - original_dist)
         improvement_reward = (prev_distance-distance)/ DT
-        reward = dist_reward + improvement_reward + 200 * success_reward
+        # velocity_reward = -np.linalg.norm(self.ball.velocity) / 30
+        
+        reward = -dist_reward + 10*improvement_reward + 400 * success_reward
 
+        # breakpoint()
         # print(f"Total Reward: {reward}, Improve Reward: {improvement_reward}, Dist Reward: {dist_reward} ")
         return reward
 
@@ -191,9 +201,12 @@ class MagneticEnv(Env):
             self.ball.velocity = np.array([0., 0., 0.])
         for electromag in self.electromagnets:
             electromag.charge = 1
+        
+        self.starting_position = self.ball.position.copy()
         self.timesteps = 0
-        # all values are zero
-        state = np.concatenate((self.ball.position,self.ball.velocity,self.desired_position))
+        self.success_time = 0
+
+        state = self.get_state()
         info = dict()
         return state, info
 
@@ -204,24 +217,32 @@ class MagneticEnv(Env):
             Bounding box: If the ball moves outside of a bounding box, truncated
             Success: If the ball reaches the final position with roughly zero velocity, terminate
         Returns:
-            (Terminated (bool), Truncated (bool))
+            (Terminated (bool), Truncated (bool), in_goal (bool))
         """
         # Greater than 10 simulation seconds
+        in_goal = False
+        terminated = False
+        truncated = False
+        
         if self.timesteps * self.dt > 10:
-            # print("time exceeded")
-            return (False, True)
-        # If the ball is further than 8 from desired position
-        if np.linalg.norm(self.ball.position - self.desired_position) > 8:
-            # print("out of bounds")
-            return (False, True)
-        # if the ball is within 0.01 distance of the desired position and has no velocity greater than 0.1
-        # NOTE add condition where it has to be inside of the desired range for a certain amount of timesteps
-        # NOTE add in and np.linalg.norm(self.ball.velocity) < 0.1) later maybe?
-        if (np.linalg.norm(self.ball.position - self.desired_position) < 0.05
-            and np.linalg.norm(self.ball.velocity) < 0.1):
-            # print("position reached successfully")
-            return (True, False)
-        return False, False
+            truncated = True
+
+        # If the ball is further than 5 from desired position
+        if np.linalg.norm(self.ball.position - self.desired_position) > 5:
+            truncated = True
+        
+        # if the ball is within 0.1 distance of the desired position and has no velocity greater than 0.1
+        if np.linalg.norm(self.ball.position - self.desired_position) < 0.1:
+            in_goal = True
+            if self.success_time * self.dt > .5:
+                terminated = True
+            else:
+                self.success_time += 1
+        else:
+            self.success_time = 0
+            in_goal = False
+
+        return (terminated, truncated, in_goal)
 
     def number_to_color(self, num):
         # Define the colormap (RdBu) and normalization
