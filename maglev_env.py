@@ -1,6 +1,6 @@
 import os
 from gymnasium import Env
-from gym.spaces import Discrete, Box
+from gymnasium.spaces import Discrete, Box
 import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')
@@ -88,11 +88,11 @@ class MagneticTarget(MagneticObject):
 
 
 class MagneticEnv(Env):
-    def __init__(self, mag_coords, dt = DT) -> None:
+    def __init__(self, mag_coords, dt, spawn_range, desired_range) -> None:
         super().__init__()
         # N = # of magnets, 1xN action space
         n = len(mag_coords)
-        self.action_space = Box(-10, 10, shape=(n,))
+        self.action_space = Box(-5, 5, shape=(n,))
         # XYZ current, XYZ velocities, and XYZ setpoint = 3 x 3
         self.observation_space = Box(-100, 100, shape=(9,))
 
@@ -102,6 +102,9 @@ class MagneticEnv(Env):
             self.electromagnets.append(ElectroMagnet(1, magnet_pos))
         self.desired_position = np.array((0., 0., 0.))
         self.starting_position = np.array((0., 0., 0.))
+
+        self.spawn_range = spawn_range
+        self.desired_range = desired_range
 
         self.timesteps = 0
         self.success_time = 0
@@ -137,7 +140,7 @@ class MagneticEnv(Env):
         self.timesteps += 1
 
         terminated, truncated, in_goal = self.check_done()
-        reward = self.calculate_reward(old_position, in_goal)
+        reward = self.calculate_reward(old_position, in_goal, new_charges_action)
         obs = self.get_state()
         info = dict()
 
@@ -158,7 +161,7 @@ class MagneticEnv(Env):
         """
         return np.concatenate((self.ball.position, self.ball.velocity, self.desired_position),axis=0)
 
-    def calculate_reward(self, pre_position, succeeded):
+    def calculate_reward(self, pre_position, succeeded, actions):
         def sign_square(x):
             """Squares a number while keeping the same sign"""
             return x * abs(x)
@@ -169,10 +172,13 @@ class MagneticEnv(Env):
         distance = np.linalg.norm(self.desired_position - self.ball.position)
         success_reward = 1 if succeeded else 0
         dist_reward = (distance - original_dist)
-        improvement_reward = (prev_distance-distance)/ DT
+        improvement_reward = (prev_distance-distance)/ self.dt
         # velocity_reward = -np.linalg.norm(self.ball.velocity) / 30
+        mag_punishment = 0
+        for action in actions:
+            mag_punishment -= action**2 * 0.1
         
-        reward = -dist_reward + 10*improvement_reward + 400 * success_reward
+        reward = -dist_reward + 10*improvement_reward + 400 * success_reward + mag_punishment
 
         # breakpoint()
         # print(f"Total Reward: {reward}, Improve Reward: {improvement_reward}, Dist Reward: {dist_reward} ")
@@ -191,13 +197,13 @@ class MagneticEnv(Env):
         state: a numpy array of all zeros
         info: a variable containing any desired information to be passed on
         """
-        if options is None:
+        if self.desired_range is None:
             self.ball.position = np.array([0., 0., 0.])
             self.ball.velocity = np.array([0., 0., 0.])
             self.desired_position = np.array([0., 0., 0.])
         else:
-            self.ball.position = self.generate_random_point(*options[0])
-            self.desired_position = self.generate_random_point(*options[1])
+            self.ball.position = self.generate_random_point(*self.spawn_range)
+            self.desired_position = self.generate_random_point(*self.desired_range)
             self.ball.velocity = np.array([0., 0., 0.])
         for electromag in self.electromagnets:
             electromag.charge = 1
@@ -231,7 +237,7 @@ class MagneticEnv(Env):
         if np.linalg.norm(self.ball.position - self.desired_position) > 5:
             truncated = True
         
-        # if the ball is within 0.1 distance of the desired position and has no velocity greater than 0.1
+        # if the ball is within 0.1 distance of the desired position
         if np.linalg.norm(self.ball.position - self.desired_position) < 0.1:
             in_goal = True
             if self.success_time * self.dt > .5:
